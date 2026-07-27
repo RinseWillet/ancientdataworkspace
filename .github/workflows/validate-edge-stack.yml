@@ -1,0 +1,27 @@
+name: Validate edge stack
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker compose rendering
+        run: |
+          cd deploy
+          CLOUDFLARE_TUNNEL_TOKEN=dummy docker compose config > /dev/null
+
+      - name: Validate nginx config syntax
+        run: |
+          docker run --rm \
+            --add-host ancientdata:127.0.0.1 \
+            --add-host retrogame:127.0.0.1 \
+            --add-host landing:127.0.0.1 \
+            -v "$PWD/deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.27-alpine nginx -t
