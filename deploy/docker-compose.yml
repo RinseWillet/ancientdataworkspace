@@ -21,9 +21,7 @@ services:
       - webgis-edge
 
   landing:
-    build:
-      context: ./landing-page
-      dockerfile: Dockerfile
+    image: rinsedev/rinsewillet-landing:latest
     restart: unless-stopped
     networks:
       - webgis-edge
