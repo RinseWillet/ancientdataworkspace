@@ -315,9 +315,20 @@ entirely within Synology rather than relying on Cloudflare for this part too.
 | Symptom | Likely cause |
 |---|---|
 | 502 from nginx on `/webGIS/` | `ancientdata` container not on `webgis-edge`, or not yet healthy |
+| `/webGIS/api/...` returns `401` when checked with `curl -I` | `curl -I` uses `HEAD`; re-test with `GET` (`curl -sS -o /dev/null -w "%{http_code}\n" ...`) |
 | Assets 404 under `/webGIS/` | Frontend built without `VITE_BASE_PATH=/webGIS/` (check the Docker image build args in `docker-image.yml`) |
 | API calls hit `/api/...` instead of `/webGIS/api/...` | `VITE_API_BASE_URL` missing at frontend build time |
+| Intermittent `401/502` on WebGIS after stack updates | Multiple active `ancientdata` containers on `webgis-edge` causing ambiguous backend routing |
+| `deploy-ancientdata-1` restart loop with `JwtUtil`/missing secret error | Runtime `JWT_SECRET` missing in the backend container environment |
 | Tunnel shows "down" in Zero Trust dashboard | `cloudflared` container not running / bad `CLOUDFLARE_TUNNEL_TOKEN` |
 | Can't reach GeoServer/Postgres via WARP from outside | Private Network CIDR not added to the tunnel, or WARP client not logged into the right Zero Trust team |
 | Arcade loads HTML for JS/CSS (`MIME type text/html`) | `/arcade/` nginx proxy missing trailing slash on `proxy_pass`, or stale Cloudflare cache for `/arcade/*` |
 
+### Critical operating notes
+
+- For full WebGIS recovery and reproducibility procedures, use
+  `../docs/deployment-recovery.md` as source of truth.
+- `/webGIS/` API validation should use **GET-based** status checks.
+- If you run multiple Compose stacks on `webgis-edge`, ensure backend ownership
+  is explicit (avoid two active `ancientdata` services unless intentionally
+  managed).

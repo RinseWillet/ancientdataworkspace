@@ -130,18 +130,58 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
+### 8.1) Backend topology models (both supported)
+
+The reverse proxy resolves `ancientdata` on the shared `webgis-edge` network.
+You can run `/webGIS/` with either model below, but avoid running both backend
+containers at once.
+
+**Model A (recommended operational baseline):**
+- Active backend is `AncientDataWebGIS` stack (`ancientdatawebgis-ancientdata-1`)
+- `ancientdataworkspace/deploy` stack provides nginx/cloudflared/landing/arcade
+- Keep `deploy-ancientdata-1` stopped/removed
+
+**Model B (alternative):**
+- Active backend is `ancientdataworkspace/deploy` service (`deploy-ancientdata-1`)
+- In this model, ensure required backend env vars (especially `JWT_SECRET`) are
+  available to that service runtime
+
+Collision check:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Image}}' | grep ancientdata
+```
+
+If both backends are running, nginx may route unpredictably.
+
 ## 9) Validation checks
 
 ```bash
 curl -I https://rinsewillet.net/
-curl -I https://rinsewillet.net/webGIS/
 curl -I https://rinsewillet.net/arcade/
 ```
 
 Expected:
 - `/` -> `200`
 - `/arcade/` -> `200`
-- `/webGIS/` -> reachable through backend (application may return `401` for unauthenticated paths; this is app-level, not tunnel failure)
+
+For `/webGIS/`, validate with **GET** (not `HEAD`) on API routes:
+
+```bash
+curl -sSI https://rinsewillet.net/webGIS/ | sed -n '1p;/^content-type:/Ip'
+curl -sS -o /dev/null -w "%{http_code}\n" https://rinsewillet.net/webGIS/api/dashboard/summary
+curl -sS -o /dev/null -w "%{http_code}\n" https://rinsewillet.net/webGIS/api/modernreferences/all
+curl -sS -o /dev/null -w "%{http_code}\n" https://rinsewillet.net/webGIS/api/suggestions/my
+```
+
+Expected:
+- `/webGIS/` -> `200` + `text/html`
+- `/webGIS/api/dashboard/summary` -> `200`
+- `/webGIS/api/modernreferences/all` -> `200` (or `204` if empty)
+- `/webGIS/api/suggestions/my` -> `401` (protected endpoint)
+
+`curl -I` sends `HEAD`; a `401` there does **not** necessarily mean guest `GET`
+access is broken.
 
 Internal service checks:
 
@@ -150,6 +190,9 @@ cd /volume1/docker/ancientdataworkspace/deploy
 docker compose exec nginx wget -S -O- http://landing:80/ 2>&1 | head -n 20
 docker compose exec nginx wget -S -O- http://ancientdata:8080/ 2>&1 | head -n 20
 docker compose exec nginx wget -S -O- http://retrogame:80/ 2>&1 | head -n 20
+docker compose exec nginx getent hosts ancientdata
+docker compose exec nginx wget -S -O- http://ancientdata:8080/api/dashboard/summary 2>&1 | head -n 20
+docker compose exec nginx wget -S -O- http://ancientdata:8080/api/modernreferences/all 2>&1 | head -n 20
 ```
 
 ## 10) Router cleanup
@@ -168,6 +211,14 @@ cd /volume1/docker/ancientdataworkspace/deploy
 docker compose restart nginx
 ```
 
+Also check backend collision/missing upstream:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Status}}' | grep ancientdata
+cd /volume1/docker/ancientdataworkspace/deploy
+docker compose exec nginx getent hosts ancientdata
+```
+
 ### B) Arcade white screen + MIME errors for JS/CSS
 - root cause was wrong proxy behavior for `/arcade/` assets
 - ensure nginx has:
@@ -182,41 +233,51 @@ location /arcade/ {
 - usually tunnel hostname route mismatch/overlap in Cloudflare
 - verify active tunnel has `rinsewillet.net` routed to `http://nginx:80`
 
+### D) `/webGIS/` is `200`, but API checks show `401` with `curl -I`
+- this is commonly a method mismatch (`HEAD` vs `GET`)
+- re-check with:
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" https://rinsewillet.net/webGIS/api/dashboard/summary
+```
+
+### E) Backend restart loop with `JwtUtil` / `JWT Secret is missing`
+- active backend runtime is missing `JWT_SECRET`
+- for Model A:
+```bash
+cd /volume1/docker/AncientDataWebGIS
+grep -n '^JWT_SECRET=' .env
+docker compose up -d ancientdata
+docker compose logs --tail=80 ancientdata | cat
+```
+- for Model B, ensure equivalent env wiring exists in the deploy stack runtime
+
+### F) `git pull --ff-only` blocked by local changes on NAS
+- backup + stash local drift, then pull:
+```bash
+cd /volume1/docker/ancientdataworkspace
+cp deploy/nginx/nginx.conf "/tmp/nginx.conf.nas.$(date +%Y%m%d-%H%M%S).bak"
+git status --short
+git --no-pager diff -- deploy/nginx/nginx.conf | cat
+git stash push -m "nas-local-nginx-before-pull" -- deploy/nginx/nginx.conf
+git pull --ff-only
+```
+
 ## 12) Secrets handling
 
 - Never commit real secrets.
 - Keep secret names in `.env.example`.
 - Store real values in NAS `.env` and a password manager backup.
 
-## 13) Prompt to start WebGIS functional remediation
+## 13) WebGIS remediation summary (this cycle)
 
-Use this prompt in a fresh implementation session:
+This cycle codified and validated the following:
+- nginx `/webGIS` canonicalization and upstream path handling in repo config
+- frontend build/runtime prefix correctness under `/webGIS/`
+- backend public GET access for intended guest endpoints
+- `/arcade/` trailing-slash proxy fix codified in repo config
 
-```text
-Context:
-- Infrastructure is now working: Cloudflare Tunnel -> nginx -> containers.
-- Public routes: `/` works, `/arcade/` works.
-- WebGIS backend is reachable through `/webGIS/`, but functional parity is incomplete.
-
-Goal (phase 1, required):
-- As an unauthenticated guest, I can open `https://rinsewillet.net/webGIS/` and use the public-facing map UI without blank pages, broken assets, or gateway/proxy errors.
-
-Current architecture:
-- Domain: rinsewillet.net
-- Reverse proxy: ancientdataworkspace/deploy/nginx/nginx.conf
-- Backend image: rinsedev/ancientdata:latest
-- Runtime vars are provided via AncientDataWebGIS/.env and compose env pass-through.
-
-Please do:
-1) Trace the complete request/asset path for `/webGIS/` (HTML, JS, CSS, API calls).
-2) Identify whether failures are due to base path handling, auth guard defaults, CORS/security filter behavior, or frontend runtime routing.
-3) Propose minimal repo changes to make guest access to public WebGIS pages work.
-4) Implement those changes in repo code/config (not ad hoc NAS-only changes).
-5) Provide exact verification commands and expected responses.
-
-Constraints:
-- Keep pull-only deployment model (Git + DockerHub images).
-- Do not weaken security broadly; scope access to intended public guest flows only.
-- Keep `/arcade/` and root landing behavior unchanged.
-```
-
+Operational learnings captured here:
+- verify public API reachability with GET-based checks
+- avoid multiple active `ancientdata` backends on `webgis-edge` unless model
+  ownership is explicit
+- treat missing `JWT_SECRET` as a runtime configuration fault, not a code fix
