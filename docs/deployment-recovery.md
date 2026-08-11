@@ -37,6 +37,8 @@ You have one front door to your home-hosted apps:
 ### Codified now in this cycle
 - `ancientdataworkspace/deploy/docker-compose.yml`:
   - `landing` switched to image-only (removed local `build:`) for strict pull-only recovery
+  - stack is proxy-only (`cloudflared`, `nginx`, `landing`) and no longer runs
+    duplicate `ancientdata`/`retrogame` app services
 
 ### Operational steps that remain intentionally manual
 - creating/editing NAS `.env` files with real secrets
@@ -84,6 +86,9 @@ git -C /volume1/docker/ancientdataworkspace pull --ff-only
 mkdir -p /volume1/docker/ancientdata/media
 mkdir -p /volume1/docker/ancientdata/backup
 mkdir -p /volume1/docker/ancientdata/geoserver
+chown -R 1000:1000 /volume1/docker/ancientdata/geoserver
+find /volume1/docker/ancientdata/geoserver -type d -exec chmod 775 {} \;
+find /volume1/docker/ancientdata/geoserver -type f -exec chmod 664 {} \;
 ```
 
 ## 7) Required environment variables
@@ -130,29 +135,23 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-### 8.1) Backend topology models (both supported)
+### 8.1) Service ownership model (single source of truth)
 
-The reverse proxy resolves `ancientdata` on the shared `webgis-edge` network.
-You can run `/webGIS/` with either model below, but avoid running both backend
-containers at once.
+The reverse proxy resolves `ancientdata` and `retrogame` on `webgis-edge`.
+Ownership is fixed to avoid routing collisions:
 
-**Model A (recommended operational baseline):**
-- Active backend is `AncientDataWebGIS` stack (`ancientdatawebgis-ancientdata-1`)
-- `ancientdataworkspace/deploy` stack provides nginx/cloudflared/landing/arcade
-- Keep `deploy-ancientdata-1` stopped/removed
-
-**Model B (alternative):**
-- Active backend is `ancientdataworkspace/deploy` service (`deploy-ancientdata-1`)
-- In this model, ensure required backend env vars (especially `JWT_SECRET`) are
-  available to that service runtime
+- `AncientDataWebGIS` stack owns `ancientdata` and `geoserver`
+- `RetroGameApp` stack owns `retrogame`
+- `ancientdataworkspace/deploy` stack owns only `nginx`, `cloudflared`, `landing`
 
 Collision check:
 
 ```bash
-docker ps --format 'table {{.Names}}\t{{.Image}}' | grep ancientdata
+docker ps --format 'table {{.Names}}\t{{.Image}}' | grep -E 'ancientdata|retrogame'
 ```
 
-If both backends are running, nginx may route unpredictably.
+If more than one `ancientdata` or more than one `retrogame` is running on
+`webgis-edge`, nginx may route unpredictably.
 
 ## 9) Validation checks
 
@@ -242,16 +241,28 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://rinsewillet.net/webGIS/api/das
 
 ### E) Backend restart loop with `JwtUtil` / `JWT Secret is missing`
 - active backend runtime is missing `JWT_SECRET`
-- for Model A:
+- validate the `AncientDataWebGIS` runtime:
 ```bash
 cd /volume1/docker/AncientDataWebGIS
 grep -n '^JWT_SECRET=' .env
 docker compose up -d ancientdata
 docker compose logs --tail=80 ancientdata | cat
 ```
-- for Model B, ensure equivalent env wiring exists in the deploy stack runtime
 
-### F) `git pull --ff-only` blocked by local changes on NAS
+### F) GeoServer `Permission denied` on startup
+- GeoServer data directory is writable by host root but not by container UID/GID
+- fix and restart:
+```bash
+sudo mkdir -p /volume1/docker/ancientdata/geoserver
+sudo chown -R 1000:1000 /volume1/docker/ancientdata/geoserver
+sudo find /volume1/docker/ancientdata/geoserver -type d -exec chmod 775 {} \;
+sudo find /volume1/docker/ancientdata/geoserver -type f -exec chmod 664 {} \;
+cd /volume1/docker/AncientDataWebGIS
+docker compose up -d --force-recreate geoserver
+docker logs --tail=120 GeoServer | cat
+```
+
+### G) `git pull --ff-only` blocked by local changes on NAS
 - backup + stash local drift, then pull:
 ```bash
 cd /volume1/docker/ancientdataworkspace
@@ -278,6 +289,6 @@ This cycle codified and validated the following:
 
 Operational learnings captured here:
 - verify public API reachability with GET-based checks
-- avoid multiple active `ancientdata` backends on `webgis-edge` unless model
-  ownership is explicit
+- avoid multiple active `ancientdata` or `retrogame` containers on
+  `webgis-edge`; keep single owner per service
 - treat missing `JWT_SECRET` as a runtime configuration fault, not a code fix

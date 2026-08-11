@@ -20,9 +20,9 @@ This guide documents the **automatic recovery system** for rinsewillet.net when 
 
 ---
 
-## Architecture: Three Docker Compose Stacks
+## Architecture: Four Docker Compose Stacks
 
-Your deployment uses **three separate compose projects** that must start in a specific order to avoid connection errors:
+Your deployment uses **four separate compose projects** that must start in a specific order to avoid connection errors:
 
 ### Stack 1: Infrastructure (Database & Admin)
 - **Location:** `/volume1/docker/ancientdata/`
@@ -36,10 +36,15 @@ Your deployment uses **three separate compose projects** that must start in a sp
 - **Starts:** Second (depends on PostGIS)
 - **Wait condition:** 10-second pause to allow app initialization
 
-### Stack 3: Public-Facing Reverse Proxy & Tunnel
+### Stack 3: Arcade Application
+- **Location:** `/volume1/docker/RetroGameApp/`
+- **Services:** retrogame app
+- **Starts:** Third (depends on network + backend routing layer expectation)
+
+### Stack 4: Public-Facing Reverse Proxy & Tunnel
 - **Location:** `/volume1/docker/ancientdataworkspace/deploy/`
-- **Services:** nginx (reverse proxy), cloudflared (Tunnel), landing page, retrogame app
-- **Starts:** Third (depends on backend apps being ready)
+- **Services:** nginx (reverse proxy), cloudflared (Tunnel), landing page
+- **Starts:** Fourth (depends on backend apps being ready)
 - **Final step:** Restart nginx to refresh connection pool
 
 ---
@@ -80,9 +85,10 @@ The script:
 3. Polls database with `pg_isready` (up to 30 attempts, 2 seconds between)
 4. Starts AncientDataWebGIS stack (ancientdata + GeoServer)
 5. Waits 10 seconds for app initialization
-6. Starts deploy stack (nginx + cloudflared + apps)
-7. Restarts nginx to refresh backend connection pool
-8. Logs all output to `/var/log/docker-startup.log`
+6. Starts RetroGameApp stack (`retrogame`)
+7. Starts deploy stack (nginx + cloudflared + landing)
+8. Restarts nginx to refresh backend connection pool
+9. Logs all output to `/var/log/docker-startup.log`
 
 **Execution time:** ~60-90 seconds total
 
@@ -143,6 +149,7 @@ ssh Antoninus138CE@192.168.2.13
 # Stop all containers (simulating unclean shutdown)
 docker-compose -f /volume1/docker/ancientdata/docker-compose.yml down
 docker-compose -f /volume1/docker/AncientDataWebGIS/docker-compose.yml down
+docker-compose -f /volume1/docker/RetroGameApp/docker-compose.yml down
 docker-compose -f /volume1/docker/ancientdataworkspace/deploy/docker-compose.yml down
 
 # Wait 5 seconds
@@ -228,6 +235,7 @@ sudo systemctl enable docker-startup.service
 | `/var/log/docker-startup.log` | Startup logs (readable by all users) |
 | `/volume1/docker/ancientdata/` | Infrastructure compose (PostGIS, pgAdmin) |
 | `/volume1/docker/AncientDataWebGIS/` | WebGIS backend compose |
+| `/volume1/docker/RetroGameApp/` | Arcade compose (`retrogame`) |
 | `/volume1/docker/ancientdataworkspace/deploy/` | Public-facing stack (nginx, cloudflared) |
 
 ---

@@ -13,6 +13,10 @@ Tunnel + an `nginx` reverse proxy, routing to three internal apps:
 | `/webGIS/` | AncientDataWebGIS | `AncientDataWebGIS` + `AncientDataWebGIS_FE` |
 | `/arcade/` | RetroGamesApp | `RetroGameApp` (external repo) |
 
+This `deploy/` stack is **proxy-only**: it runs `cloudflared`, `nginx`, and
+`landing`. It does **not** own `ancientdata` or `retrogame`; those are owned by
+their application stacks on `webgis-edge`.
+
 No ports are forwarded on the KPN Experia Box for any of this — `cloudflared`
 only makes outbound connections to Cloudflare's edge. **Cost: $0** (Cloudflare
 Tunnel + free plan DNS/proxy/WAF/Access are all free for personal use).
@@ -319,7 +323,9 @@ entirely within Synology rather than relying on Cloudflare for this part too.
 | Assets 404 under `/webGIS/` | Frontend built without `VITE_BASE_PATH=/webGIS/` (check the Docker image build args in `docker-image.yml`) |
 | API calls hit `/api/...` instead of `/webGIS/api/...` | `VITE_API_BASE_URL` missing at frontend build time |
 | Intermittent `401/502` on WebGIS after stack updates | Multiple active `ancientdata` containers on `webgis-edge` causing ambiguous backend routing |
-| `deploy-ancientdata-1` restart loop with `JwtUtil`/missing secret error | Runtime `JWT_SECRET` missing in the backend container environment |
+| Backend restart loop with `JwtUtil`/missing secret error | `AncientDataWebGIS` runtime `JWT_SECRET` missing in `/volume1/docker/AncientDataWebGIS/.env` |
+| Arcade intermittently serves wrong/stale JS bundle | Multiple active `retrogame` containers on `webgis-edge`, causing ambiguous backend routing |
+| GeoServer `/geoserver` unavailable with `Permission denied` in logs | `/volume1/docker/ancientdata/geoserver` ownership/permissions incompatible with container write access |
 | Tunnel shows "down" in Zero Trust dashboard | `cloudflared` container not running / bad `CLOUDFLARE_TUNNEL_TOKEN` |
 | Can't reach GeoServer/Postgres via WARP from outside | Private Network CIDR not added to the tunnel, or WARP client not logged into the right Zero Trust team |
 | Arcade loads HTML for JS/CSS (`MIME type text/html`) | `/arcade/` nginx proxy missing trailing slash on `proxy_pass`, or stale Cloudflare cache for `/arcade/*` |
@@ -330,5 +336,5 @@ entirely within Synology rather than relying on Cloudflare for this part too.
   `../docs/deployment-recovery.md` as source of truth.
 - `/webGIS/` API validation should use **GET-based** status checks.
 - If you run multiple Compose stacks on `webgis-edge`, ensure backend ownership
-  is explicit (avoid two active `ancientdata` services unless intentionally
-  managed).
+  is explicit (never run duplicate `ancientdata` or duplicate `retrogame`
+  services).

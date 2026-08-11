@@ -13,8 +13,6 @@ services:
     restart: unless-stopped
     depends_on:
       - landing
-      - ancientdata
-      - retrogame
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
@@ -22,18 +20,6 @@ services:
 
   landing:
     image: rinsedev/rinsewillet-landing:latest
-    restart: unless-stopped
-    networks:
-      - webgis-edge
-
-  ancientdata:
-    image: rinsedev/ancientdata:latest
-    restart: unless-stopped
-    networks:
-      - webgis-edge
-
-  retrogame:
-    image: rinsedev/retrogameapp:latest
     restart: unless-stopped
     networks:
       - webgis-edge
