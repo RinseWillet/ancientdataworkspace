@@ -3,6 +3,7 @@ services:
     image: cloudflare/cloudflared:latest
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     restart: unless-stopped
+    mem_limit: 96m
     depends_on:
       - nginx
     networks:
@@ -11,6 +12,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    mem_limit: 32m
     depends_on:
       - landing
     volumes:
@@ -21,6 +23,7 @@ services:
   landing:
     image: rinsedev/rinsewillet-landing:latest
     restart: unless-stopped
+    mem_limit: 32m
     networks:
       - webgis-edge
 
