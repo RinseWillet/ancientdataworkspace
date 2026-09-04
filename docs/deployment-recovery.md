@@ -85,10 +85,33 @@ git -C /volume1/docker/ancientdataworkspace pull --ff-only
 ```bash
 mkdir -p /volume1/docker/ancientdata/media
 mkdir -p /volume1/docker/ancientdata/backup
+mkdir -p /volume1/docker/ancientdata/backups
 mkdir -p /volume1/docker/ancientdata/geoserver
-chown -R 1000:1000 /volume1/docker/ancientdata/geoserver
+chown -R 1000:1000 /volume1/docker/ancientdata/media /volume1/docker/ancientdata/backup /volume1/docker/ancientdata/backups /volume1/docker/ancientdata/geoserver
 find /volume1/docker/ancientdata/geoserver -type d -exec chmod 775 {} \;
 find /volume1/docker/ancientdata/geoserver -type f -exec chmod 664 {} \;
+```
+
+`backup` (singular) is the in-app `NasBackupService`/`DbBackupService` bind mount; `backups` (plural) is
+where the NAS cron job for `scripts/backup.sh` writes its combined DB+media+GeoServer archives — see
+`AncientDataWebGIS/docs/BACKUP-STRATEGY.md`. Both are required for a). photo/media backup and c). database
+backup to actually persist anywhere.
+
+## 6a) Apply the `backup_history` schema (required — see AncientDataWebGIS/docs/architecture/adr/ADR-006-media-backup-nas-sync.md)
+
+This app disables Flyway; all schema, including `backup_history`, must be applied manually to the shared
+PostGIS database (`AncientDataWebGIS/docs/architecture/DB-MIGRATION-STRATEGY.md`). Skipping this step is the
+most likely cause of the admin panel's "Back up now" button appearing broken:
+
+```bash
+psql -h 192.168.2.13 -p 2665 -U root -d webGIS_DB \
+  -f /volume1/docker/AncientDataWebGIS/docs/architecture/sql/backup_history.sql
+```
+
+Verify it exists before relying on backup status reporting:
+
+```bash
+psql -h 192.168.2.13 -p 2665 -U root -d webGIS_DB -c "\d backup_history"
 ```
 
 ## 7) Required environment variables
@@ -117,7 +140,20 @@ JWT_SECRET=<long-random-secret>
 JWT_EXPIRATION=86400000
 CORS_ALLOWED_ORIGINS=https://rinsewillet.net
 MEDIA_BASE_URL=https://rinsewillet.net/webGIS/api/media/files
+
+# Backups (a/c requirements) — off by default; must be explicitly enabled,
+# see AncientDataWebGIS/docs/BACKUP-STRATEGY.md
+BACKUP_NAS_ENABLED=true
+BACKUP_NAS_MOUNT_PATH=/backup/media
+BACKUP_NAS_SYNC_CRON=0 0 3 * * SUN
+BACKUP_DB_ENABLED=true
+BACKUP_DB_OUTPUT_PATH=/backup/db
+BACKUP_STALENESS_THRESHOLD_HOURS=192
 ```
+
+On the NAS itself (not in this `.env` — it's read directly by the cron-invoked shell script, not the
+container), also schedule `scripts/backup.sh` per `AncientDataWebGIS/docs/BACKUP-STRATEGY.md` §"Deployment
+Setup", and configure Cloud Sync → Google Drive per that doc's Part 3 for off-device redundancy (b/c requirements).
 
 ## 8) Deployment order (pull-only)
 
@@ -178,6 +214,24 @@ Expected:
 - `/webGIS/api/dashboard/summary` -> `200`
 - `/webGIS/api/modernreferences/all` -> `200` (or `204` if empty)
 - `/webGIS/api/suggestions/my` -> `401` (protected endpoint)
+
+### 9.1) Backup validation (a/b/c requirements)
+
+```bash
+# As an admin JWT, trigger both backups and confirm real outcomes (not just "ok")
+curl -s -X POST https://rinsewillet.net/webGIS/api/backup/sync -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+curl -s https://rinsewillet.net/webGIS/api/backup/status -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+# Confirm files actually landed
+ls -lh /volume1/docker/ancientdata/backup/media/ /volume1/docker/ancientdata/backup/db/
+
+# Confirm the NAS cron archive includes all three components
+tar -tzf $(ls -t /volume1/docker/ancientdata/backups/ancientdata-backup-*.tar.gz | grep -v -- '-media\.tar\.gz$\|-geoserver\.tar\.gz$' | head -1)
+```
+
+Expected `tar -tzf` output lists a `-db.sql`, `-media.tar.gz`, and `-geoserver.tar.gz` member (see
+`AncientDataWebGIS/docs/BACKUP-STRATEGY.md`). If `/api/backup/sync` reports `"status":"error"`, or
+`/api/backup/status` never leaves `"lastRunAt": null`, see that doc's Troubleshooting table.
 
 `curl -I` sends `HEAD`; a `401` there does **not** necessarily mean guest `GET`
 access is broken.
@@ -262,7 +316,12 @@ docker compose up -d --force-recreate geoserver
 docker logs --tail=120 GeoServer | cat
 ```
 
-### G) `git pull --ff-only` blocked by local changes on NAS
+### G) Admin panel "Back up now" fails or status never updates
+- see step 6a above (`backup_history` schema) and
+  `AncientDataWebGIS/docs/BACKUP-STRATEGY.md`'s Troubleshooting table — most common causes are the
+  schema step being skipped, or `BACKUP_NAS_ENABLED`/`BACKUP_DB_ENABLED` left at their default `false`
+
+### H) `git pull --ff-only` blocked by local changes on NAS
 - backup + stash local drift, then pull:
 ```bash
 cd /volume1/docker/ancientdataworkspace
